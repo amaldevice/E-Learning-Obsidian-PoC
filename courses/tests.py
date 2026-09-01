@@ -373,3 +373,180 @@ class BacklinksTests(TestCase):
         self.assertEqual(len(bl), 1)
         self.assertEqual(bl[0]["lesson_slug"], "lesson-02")
 
+
+class VaultListDownloadTests(TestCase):
+    def setUp(self):
+        self.alice = User.objects.create_user(username="alice", password="poc12345")
+        self.budi = User.objects.create_user(username="budi", password="poc12345")
+        self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
+        self.course2 = Course.objects.create(title="Web Dasar", slug="web-dasar")
+        self.lesson1 = Lesson.objects.create(course=self.course, title="Intro", slug="lesson-01", order=1)
+        self.lesson2 = Lesson.objects.create(course=self.course, title="Variabel", slug="lesson-02", order=2)
+        self.lesson_w1 = Lesson.objects.create(course=self.course2, title="HTML", slug="lesson-01-html", order=1)
+        self._clean_vaults()
+
+    def tearDown(self):
+        self._clean_vaults()
+
+    def _clean_vaults(self):
+        import shutil
+        from pathlib import Path
+
+        from django.conf import settings
+
+        for user in ["alice", "budi"]:
+            p = Path(settings.BASE_DIR) / "vaults" / user
+            if p.exists():
+                shutil.rmtree(p)
+
+    def _save_note(self, username, course_slug, lesson_slug, title, content):
+        from datetime import datetime, timezone
+
+        from .vault import vault_path, write_note_atomic
+
+        vpath = vault_path(username, course_slug, lesson_slug)
+        now = datetime.now(timezone.utc).isoformat()
+        write_note_atomic(
+            vpath,
+            {"title": title, "course": course_slug, "lesson": lesson_slug, "created": now, "updated": now, "tags": []},
+            content,
+        )
+
+    def test_vault_list_requires_login(self):
+        resp = self.client.get("/vault/")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/accounts/login/", resp["Location"])
+
+    def test_vault_download_requires_login(self):
+        resp = self.client.get("/vault/download/")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/accounts/login/", resp["Location"])
+
+    def test_vault_list_shows_own_files_and_links(self):
+        self._save_note("alice", "python-dasar", "lesson-01", "Intro", "alice note 1")
+        self._save_note("alice", "web-dasar", "lesson-01-html", "HTML", "alice note 2")
+        self._save_note("budi", "python-dasar", "lesson-01", "Intro", "budi note")
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/vault/")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        # alice sees her two notes
+        self.assertIn("lesson-01", html)
+        self.assertIn("lesson-01-html", html)
+        # link to lesson present
+        self.assertIn("/courses/python-dasar/lessons/lesson-01/", html)
+        # budi's file must not leak via isolation — check entries count in context
+        entries = resp.context["entries"]
+        self.assertEqual(len(entries), 2)
+        slugs = {(e["course_slug"], e["lesson_slug"]) for e in entries}
+        self.assertIn(("python-dasar", "lesson-01"), slugs)
+        self.assertIn(("web-dasar", "lesson-01-html"), slugs)
+
+    def test_vault_list_isolation(self):
+        self._save_note("alice", "python-dasar", "lesson-01", "Intro", "alice")
+        self.client.login(username="budi", password="poc12345")
+        resp = self.client.get("/vault/")
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.context["entries"]
+        self.assertEqual(len(entries), 0)
+
+    def test_vault_download_zip_structure(self):
+        self._save_note("alice", "python-dasar", "lesson-01", "Intro", "hello alice")
+        self._save_note("alice", "python-dasar", "lesson-02", "Variabel", "second note")
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/vault/download/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/zip")
+        self.assertIn("vault-alice-", resp["Content-Disposition"])
+        self.assertIn(".zip", resp["Content-Disposition"])
+        import io
+        import zipfile
+
+        data = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        names = sorted(zf.namelist())
+        self.assertIn("python-dasar/lesson-01.md", names)
+        self.assertIn("python-dasar/lesson-02.md", names)
+        # content preserved
+        self.assertIn("hello alice", zf.read("python-dasar/lesson-01.md").decode())
+
+    def test_vault_download_isolation(self):
+        self._save_note("alice", "python-dasar", "lesson-01", "Intro", "alice secret")
+        self._save_note("budi", "python-dasar", "lesson-01", "Intro", "budi secret")
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/vault/download/")
+        import io
+        import zipfile
+
+        data = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        content = zf.read("python-dasar/lesson-01.md").decode()
+        self.assertIn("alice secret", content)
+        self.assertNotIn("budi secret", content)
+        # budi's download is separate
+        self.client.logout()
+        self.client.login(username="budi", password="poc12345")
+        resp = self.client.get("/vault/download/")
+        data = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        content = zf.read("python-dasar/lesson-01.md").decode()
+        self.assertIn("budi secret", content)
+        self.assertNotIn("alice secret", content)
+
+    def test_vault_download_empty_vault(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/vault/download/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/zip")
+        import io
+        import zipfile
+
+        data = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        self.assertEqual(zf.namelist(), [])
+
+    def test_vault_download_guard_too_many_files(self):
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        self.client.login(username="alice", password="poc12345")
+        fake_files = [Path(f"/tmp/fake/{i}.md") for i in range(1001)]
+        with patch("courses.vault.VAULT_ROOT") as mock_root:
+            mock_vault = MagicMock()
+            mock_vault.exists.return_value = True
+            mock_vault.rglob.return_value = fake_files
+            mock_root.__truediv__.return_value = mock_vault
+            resp = self.client.get("/vault/download/")
+            self.assertEqual(resp.status_code, 400)
+
+    def test_vault_download_guard_too_large(self):
+        from unittest.mock import MagicMock, patch
+
+        self.client.login(username="alice", password="poc12345")
+        # 2 files each claiming 30MB -> total >50MB
+        p1 = MagicMock()
+        p1.stat.return_value.st_size = 30 * 1024 * 1024
+        p1.relative_to.return_value = "python-dasar/lesson-01.md"
+        p2 = MagicMock()
+        p2.stat.return_value.st_size = 30 * 1024 * 1024
+        p2.relative_to.return_value = "python-dasar/lesson-02.md"
+        fake_files = [p1, p2]
+        with patch("courses.vault.VAULT_ROOT") as mock_root:
+            mock_vault = MagicMock()
+            mock_vault.exists.return_value = True
+            mock_vault.rglob.return_value = fake_files
+            mock_root.__truediv__.return_value = mock_vault
+            resp = self.client.get("/vault/download/")
+            self.assertEqual(resp.status_code, 400)
+
+    def test_vault_list_empty(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/vault/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Belum ada catatan")
+
+    def test_header_vault_links_visible_when_logged_in(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/courses/")
+        self.assertContains(resp, 'href="/vault/"')
+        self.assertContains(resp, 'href="/vault/download/"')

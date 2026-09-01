@@ -157,12 +157,12 @@ def lesson_preview(request, course_slug, lesson_slug):
     return JsonResponse({"html": html})
 
 
-# --- Vault views (T5 owns full impl; stubs here to keep URLConf valid) ---
+# --- Vault views (T5) ---
 @login_required
 def vault_list(request):
     from pathlib import Path
 
-    from django.conf import settings
+    from django.urls import reverse
 
     from .vault import VAULT_ROOT, _safe
 
@@ -180,17 +180,17 @@ def vault_list(request):
                 continue
             course_slug = parts[0]
             lesson_slug = Path(parts[-1]).stem
-            # try to resolve lesson url if course/lesson exists
             lesson_url = ""
             try:
                 course = Course.objects.get(slug=course_slug)
                 lesson = Lesson.objects.get(course=course, slug=lesson_slug)
-                from django.urls import reverse
-
-                lesson_url = reverse("lesson-detail", kwargs={"course_slug": course.slug, "lesson_slug": lesson.slug})
+                lesson_url = reverse(
+                    "lesson-detail",
+                    kwargs={"course_slug": course.slug, "lesson_slug": lesson.slug},
+                )
             except Exception:
                 pass
-            meta = {}
+            meta: dict = {}
             try:
                 meta, _ = read_note(md_path)
             except Exception:
@@ -199,7 +199,7 @@ def vault_list(request):
                 {
                     "course_slug": course_slug,
                     "lesson_slug": lesson_slug,
-                    "vault_path": str(md_path),
+                    "vault_path": str(rel),
                     "title": meta.get("title") or lesson_slug,
                     "lesson_url": lesson_url,
                 }
@@ -211,23 +211,37 @@ def vault_list(request):
 def vault_download(request):
     import io
     import zipfile
+    from datetime import date
 
-    from django.http import HttpResponse
+    from django.http import FileResponse, HttpResponse
 
     from .vault import VAULT_ROOT, _safe
 
     safe_user = _safe(request.user.username)
     user_vault = VAULT_ROOT / safe_user
+    files: list = []
+    if user_vault.exists():
+        files = list(user_vault.rglob("*.md"))
+    # Guard: max 1000 files
+    if len(files) > 1000:
+        return HttpResponse("Vault terlalu besar: melebihi 1000 file.", status=400)
+    # Guard: max 50MB total
+    total = 0
+    for p in files:
+        try:
+            total += p.stat().st_size
+        except OSError:
+            continue
+        if total > 50 * 1024 * 1024:
+            return HttpResponse("Vault terlalu besar: melebihi 50MB.", status=400)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if user_vault.exists():
-            for md_path in user_vault.rglob("*.md"):
-                try:
-                    arcname = md_path.relative_to(user_vault)
-                except ValueError:
-                    continue
-                zf.write(md_path, arcname)
+        for md_path in files:
+            try:
+                arcname = md_path.relative_to(user_vault)
+            except ValueError:
+                continue
+            zf.write(md_path, arcname)
     buf.seek(0)
-    resp = HttpResponse(buf.getvalue(), content_type="application/zip")
-    resp["Content-Disposition"] = f'attachment; filename="vault-{safe_user}.zip"'
-    return resp
+    filename = f"vault-{safe_user}-{date.today().isoformat()}.zip"
+    return FileResponse(buf, as_attachment=True, filename=filename, content_type="application/zip")
