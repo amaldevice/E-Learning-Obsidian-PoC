@@ -7,6 +7,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
+from .backlinks import get_backlinks
 from .markdown import render_markdown
 from .models import Course, Lesson, Note
 from .vault import read_note, vault_path, write_note_atomic
@@ -103,7 +104,6 @@ def lesson_detail(request, course_slug, lesson_slug):
     next_lesson = (
         lessons[idx + 1] if idx is not None and idx < len(lessons) - 1 else None
     )
-
     # Load existing note for this user+lesson
     try:
         vpath = vault_path(request.user.username, course.slug, lesson.slug)
@@ -114,6 +114,12 @@ def lesson_detail(request, course_slug, lesson_slug):
     if vpath is not None and vpath.exists():
         meta, note_content = read_note(vpath)
         note_updated = meta.get("updated")
+
+    # Backlinks: notes in this user's vault linking to this lesson
+    try:
+        backlinks = get_backlinks(request.user.username, lesson.slug, course.slug)
+    except Exception:
+        backlinks = []
 
     return render(
         request,
@@ -127,6 +133,7 @@ def lesson_detail(request, course_slug, lesson_slug):
             "next_lesson": next_lesson,
             "note_content": note_content,
             "note_updated": note_updated,
+            "backlinks": backlinks,
         },
     )
 
@@ -148,3 +155,79 @@ def lesson_preview(request, course_slug, lesson_slug):
         content = request.POST.get("content", "")
     html = render_markdown(content)
     return JsonResponse({"html": html})
+
+
+# --- Vault views (T5 owns full impl; stubs here to keep URLConf valid) ---
+@login_required
+def vault_list(request):
+    from pathlib import Path
+
+    from django.conf import settings
+
+    from .vault import VAULT_ROOT, _safe
+
+    safe_user = _safe(request.user.username)
+    user_vault = VAULT_ROOT / safe_user
+    entries = []
+    if user_vault.exists():
+        for md_path in sorted(user_vault.rglob("*.md")):
+            try:
+                rel = md_path.relative_to(user_vault)
+            except ValueError:
+                continue
+            parts = rel.parts
+            if len(parts) < 2:
+                continue
+            course_slug = parts[0]
+            lesson_slug = Path(parts[-1]).stem
+            # try to resolve lesson url if course/lesson exists
+            lesson_url = ""
+            try:
+                course = Course.objects.get(slug=course_slug)
+                lesson = Lesson.objects.get(course=course, slug=lesson_slug)
+                from django.urls import reverse
+
+                lesson_url = reverse("lesson-detail", kwargs={"course_slug": course.slug, "lesson_slug": lesson.slug})
+            except Exception:
+                pass
+            meta = {}
+            try:
+                meta, _ = read_note(md_path)
+            except Exception:
+                pass
+            entries.append(
+                {
+                    "course_slug": course_slug,
+                    "lesson_slug": lesson_slug,
+                    "vault_path": str(md_path),
+                    "title": meta.get("title") or lesson_slug,
+                    "lesson_url": lesson_url,
+                }
+            )
+    return render(request, "vault/list.html", {"entries": entries, "username": request.user.username})
+
+
+@login_required
+def vault_download(request):
+    import io
+    import zipfile
+
+    from django.http import HttpResponse
+
+    from .vault import VAULT_ROOT, _safe
+
+    safe_user = _safe(request.user.username)
+    user_vault = VAULT_ROOT / safe_user
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if user_vault.exists():
+            for md_path in user_vault.rglob("*.md"):
+                try:
+                    arcname = md_path.relative_to(user_vault)
+                except ValueError:
+                    continue
+                zf.write(md_path, arcname)
+    buf.seek(0)
+    resp = HttpResponse(buf.getvalue(), content_type="application/zip")
+    resp["Content-Disposition"] = f'attachment; filename="vault-{safe_user}.zip"'
+    return resp

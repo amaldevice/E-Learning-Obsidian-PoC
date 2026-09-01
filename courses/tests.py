@@ -267,3 +267,109 @@ class VaultHelperTests(TestCase):
             meta, content = read_note(p)
             self.assertEqual(meta["title"], "T2")
             self.assertEqual(content.strip(), "updated")
+
+class BacklinksTests(TestCase):
+    def setUp(self):
+        import shutil
+        from pathlib import Path
+
+        from django.conf import settings
+
+        from .vault import VAULT_ROOT, _safe
+
+        # clean vault for alice/budi to avoid cross-test pollution (filesystem persists across tests)
+        for u in ["alice", "budi"]:
+            p = VAULT_ROOT / _safe(u)
+            if p.exists():
+                shutil.rmtree(p)
+        self.alice = User.objects.create_user(username="alice", password="poc12345")
+        self.budi = User.objects.create_user(username="budi", password="poc12345")
+        self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
+        self.lesson1 = Lesson.objects.create(course=self.course, title="Intro", slug="lesson-01", order=1)
+        self.lesson2 = Lesson.objects.create(course=self.course, title="Variabel", slug="lesson-02", order=2)
+        self.lesson3 = Lesson.objects.create(course=self.course, title="Fungsi", slug="lesson-03", order=3)
+
+    def tearDown(self):
+        import shutil
+
+        from .vault import VAULT_ROOT, _safe
+
+        for u in ["alice", "budi"]:
+            p = VAULT_ROOT / _safe(u)
+            if p.exists():
+                shutil.rmtree(p)
+
+    def _lesson_url(self, lesson):
+        return f"/courses/{self.course.slug}/lessons/{lesson.slug}/"
+
+    def _save_note(self, username, lesson, content):
+        from datetime import datetime, timezone
+
+        from .vault import vault_path, write_note_atomic
+
+        vpath = vault_path(username, self.course.slug, lesson.slug)
+        now = datetime.now(timezone.utc).isoformat()
+        write_note_atomic(vpath, {"title": lesson.title, "course": self.course.slug, "lesson": lesson.slug, "created": now, "updated": now, "tags": []}, content)
+
+    def test_backlinks_shows_sources(self):
+        # 2 notes linking to lesson-01, GET lesson-01 shows backlinks
+        self._save_note("alice", self.lesson2, "See [[lesson-01]] for intro")
+        self._save_note("alice", self.lesson3, "Ref [[python-dasar/lesson-01|Intro]]")
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get(self._lesson_url(self.lesson1))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        # should list both sources
+        self.assertIn("lesson-02", html)
+        self.assertIn("lesson-03", html)
+        # panel heading present
+        self.assertIn("Backlinks", html)
+
+    def test_backlinks_isolation(self):
+        # budi's notes not in alice's backlinks
+        self._save_note("budi", self.lesson2, "Budi links [[lesson-01]]")
+        self._save_note("alice", self.lesson3, "Alice links [[lesson-01]]")
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get(self._lesson_url(self.lesson1))
+        html = resp.content.decode()
+        self.assertIn("lesson-03", html)
+        from .backlinks import get_backlinks
+
+        alice_bl = get_backlinks("alice", "lesson-01", "python-dasar")
+        budi_bl = get_backlinks("budi", "lesson-01", "python-dasar")
+        self.assertEqual(len(alice_bl), 1)
+        self.assertEqual(alice_bl[0]["lesson_slug"], "lesson-03")
+        self.assertEqual(len(budi_bl), 1)
+        self.assertEqual(budi_bl[0]["lesson_slug"], "lesson-02")
+
+    def test_backlinks_strips_frontmatter_and_code(self):
+        # wikilink in fenced code and inline code should not count
+        self._save_note("alice", self.lesson2, "```\n[[lesson-01]]\n```\nAlso `[[lesson-01]]` inline")
+        # frontmatter wikilink: write raw file where frontmatter contains wikilink but content does not
+        from pathlib import Path
+
+        from .vault import vault_path, write_note_atomic
+        from datetime import datetime, timezone
+
+        vpath = vault_path("alice", self.course.slug, self.lesson3.slug)
+        now = datetime.now(timezone.utc).isoformat()
+        # frontmatter title contains wikilink, content clean
+        write_note_atomic(vpath, {"title": "[[lesson-01]]", "course": self.course.slug, "lesson": self.lesson3.slug, "created": now, "updated": now, "tags": []}, "No link here")
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get(self._lesson_url(self.lesson1))
+        html = resp.content.decode()
+        self.assertIn("Tidak ada backlink", html)
+        from .backlinks import get_backlinks
+
+        bl = get_backlinks("alice", "lesson-01", "python-dasar")
+        self.assertEqual(bl, [])
+
+    def test_backlinks_regex_variants(self):
+        # alias, heading, embed variants — single source file with multiple links should count as 1 backlink
+        self._save_note("alice", self.lesson2, "Link [[lesson-01#heading]] and [[lesson-01|Alias]] and ![[lesson-01]]")
+        from .backlinks import get_backlinks
+
+        bl = get_backlinks("alice", "lesson-01", "python-dasar")
+        self.assertEqual(len(bl), 1)
+        self.assertEqual(bl[0]["lesson_slug"], "lesson-02")
+

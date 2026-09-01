@@ -20,7 +20,9 @@
   <a href="{% url 'course-list' %}"><strong>E-Learning PoC</strong></a>
   <nav>
     {% if user.is_authenticated %}
-      <span>{{ user.username }}</span>
+      <a href="{% url 'vault-list' %}">Vault</a>
+      <a href="{% url 'vault-download' %}" class="btn" style="margin-left:8px">Download .zip</a>
+      <span style="margin-left:12px">{{ user.username }}</span>
       <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}<button type="submit" class="btn" style="margin-left:8px">Logout</button></form>
     {% else %}
       <a href="{% url 'login' %}">Login</a>

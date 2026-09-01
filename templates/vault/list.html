@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Vault — E-Learning PoC{% endblock %}
+{% block content %}
+<h1>Vault Saya</h1>
+<p style="color:#6b7280">Semua catatan di <code>vaults/{{ username }}/</code>.</p>
+
+{% if entries %}
+  <div style="margin:12px 0">
+    <a href="{% url 'vault-download' %}" class="btn btn-primary">Download .zip</a>
+  </div>
+  {% for entry in entries %}
+    <div class="card">
+      <strong>{{ entry.title }}</strong>
+      <span style="color:#6b7280;font-size:13px"> — {{ entry.course_slug }}/{{ entry.lesson_slug }}.md</span>
+      {% if entry.lesson_url %}
+        <a href="{{ entry.lesson_url }}" style="margin-left:8px">Buka lesson →</a>
+      {% endif %}
+      <div style="color:#6b7280;font-size:12px;margin-top:4px">{{ entry.vault_path }}</div>
+    </div>
+  {% endfor %}
+{% else %}
+  <p>Belum ada catatan. Buka lesson dan simpan catatan untuk mulai.</p>
+  <div style="margin-top:12px">
+    <a href="{% url 'vault-download' %}" class="btn">Download .zip (kosong)</a>
+  </div>
+{% endif %}
+{% endblock %}
