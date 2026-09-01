@@ -1,0 +1,12 @@
+[project]
+name = "elearning-obsidian-poc"
+version = "0.1.0"
+description = "PoC E-Learning + Catatan Obsidian per User (Django)"
+requires-python = ">=3.12"
+dependencies = [
+    "Django>=5.1",
+    "markdown-it-py>=3.0",
+    "nh3>=0.2",
+    "python-frontmatter>=1.0",
+    "filelock>=3.0",
+]

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ course.title }} — E-Learning PoC{% endblock %}
+{% block content %}
+<p><a href="{% url 'course-list' %}">← Courses</a></p>
+<h1>{{ course.title }}</h1>
+{% if course.description %}<p>{{ course.description }}</p>{% endif %}
+<h2>Lessons</h2>
+{% for lesson in lessons %}
+  <div class="card">
+    <a href="{% url 'lesson-detail' course.slug lesson.slug %}">{{ lesson.order }}. {{ lesson.title }}</a>
+  </div>
+{% empty %}
+  <p>Belum ada lesson.</p>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Courses — E-Learning PoC{% endblock %}
+{% block content %}
+<h1>Courses</h1>
+{% for course in courses %}
+  <div class="card">
+    <h2><a href="{% url 'course-detail' course.slug %}">{{ course.title }}</a></h2>
+    {% if course.description %}<p>{{ course.description }}</p>{% endif %}
+  </div>
+{% empty %}
+  <p>Belum ada course.</p>
+{% endfor %}
+{% endblock %}
