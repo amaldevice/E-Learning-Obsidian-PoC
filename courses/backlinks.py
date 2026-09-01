@@ -3,17 +3,17 @@ from pathlib import Path
 
 from .vault import VAULT_ROOT, _safe
 
-WIKILINK_RE = re.compile(r'(!?)\[\[([^|\]#]+)(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]')
-TAG_RE = re.compile(r'(?<![\w/])#([a-zA-Z0-9/_-]+)')
-
+WIKILINK_RE = re.compile(r"(!?)\[\[([^|\]#]+)(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]")
+# Also used by courses/views.py for tag extraction on save
+TAG_RE = re.compile(r"(?<![\w/])#([a-zA-Z0-9/_-]+)")
 
 def _strip_for_scan(text: str) -> str:
-    # strip frontmatter at start: --- ... ---
-    text = re.sub(r'^---\n.*?\n---\n', '', text, flags=re.DOTALL)
+    # strip frontmatter at start: --- ... --- (handle \r\n and optional trailing newline)
+    text = re.sub(r"^---\r?\n.*?\r?\n---\r?\n?", "", text, flags=re.DOTALL)
     # strip fenced code blocks
-    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     # strip inline code
-    text = re.sub(r'`[^`]*`', '', text)
+    text = re.sub(r"`[^`]*`", "", text)
     return text
 
 

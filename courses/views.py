@@ -7,10 +7,25 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
-from .backlinks import get_backlinks
+from .backlinks import TAG_RE, get_backlinks
 from .markdown import render_markdown
 from .models import Course, Lesson, Note
-from .vault import read_note, vault_path, write_note_atomic
+from .vault import read_note, vault_path, vault_rel_path, write_note_atomic
+
+
+def _parse_json_body(request) -> dict:
+    try:
+        return json.loads(request.body.decode("utf-8") or "{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def _extract_tags(content: str) -> list[str]:
+    # Strip frontmatter + code before extracting #tag (reuse backlinks TAG_RE)
+    stripped = re.sub(r"^---\r?\n.*?\r?\n---\r?\n", "", content, flags=re.DOTALL)
+    stripped = re.sub(r"```.*?```", "", stripped, flags=re.DOTALL)
+    stripped = re.sub(r"`[^`]*`", "", stripped)
+    return sorted(set(TAG_RE.findall(stripped)))
 
 
 def _youtube_embed_url(url: str) -> str:
@@ -53,10 +68,7 @@ def lesson_detail(request, course_slug, lesson_slug):
     if request.method == "POST":
         # Support JSON body for fetch autosave
         if request.content_type == "application/json":
-            try:
-                data = json.loads(request.body.decode("utf-8") or "{}")
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                data = {}
+            data = _parse_json_body(request)
             content = data.get("content", "")
         else:
             content = request.POST.get("content", "")
@@ -73,20 +85,23 @@ def lesson_detail(request, course_slug, lesson_slug):
         # Try to preserve created from existing file
         existing_meta, _ = read_note(vpath)
         created = existing_meta.get("created", now)
+        tags = _extract_tags(content)
+        # Merge with existing tags if content has no tags (preserve manual tags)
+        if not tags and existing_meta.get("tags"):
+            tags = existing_meta["tags"]
         metadata = {
             "title": lesson.title,
             "course": course.slug,
             "lesson": lesson.slug,
             "created": created,
             "updated": now,
-            "tags": existing_meta.get("tags", []),
+            "tags": tags,
         }
         write_note_atomic(vpath, metadata, content)
-        # Upsert Note metadata
         Note.objects.update_or_create(
             user=request.user,
             lesson=lesson,
-            defaults={"vault_path": str(vpath)},
+            defaults={"vault_path": vault_rel_path(vpath)},
         )
         if is_fetch or request.content_type == "application/json":
             return JsonResponse({"ok": True, "updated": now})
@@ -142,15 +157,10 @@ def lesson_preview(request, course_slug, lesson_slug):
     """POST JSON {content: str} -> {html: str} sanitized via markdown.py (nh3)."""
     if request.method != "POST":
         return JsonResponse({"error": "POST required"}, status=405)
-    # Ensure lesson exists (authz) even though content is freeform preview
     get_object_or_404(Course, slug=course_slug)
     get_object_or_404(Lesson, course__slug=course_slug, slug=lesson_slug)
-    try:
-        data = json.loads(request.body.decode("utf-8") or "{}")
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        data = {}
+    data = _parse_json_body(request)
     content = data.get("content", "")
-    # Also support form-encoded fallback
     if not content and request.POST.get("content"):
         content = request.POST.get("content", "")
     html = render_markdown(content)
@@ -158,19 +168,26 @@ def lesson_preview(request, course_slug, lesson_slug):
 
 
 # --- Vault views (T5) ---
+def _user_vault(request) -> tuple[str, "Path"]:
+    from .vault import VAULT_ROOT, _safe
+
+    safe_user = _safe(request.user.username)
+    return safe_user, VAULT_ROOT / safe_user
+
+
 @login_required
 def vault_list(request):
     from pathlib import Path
 
     from django.urls import reverse
 
-    from .vault import VAULT_ROOT, _safe
-
-    safe_user = _safe(request.user.username)
-    user_vault = VAULT_ROOT / safe_user
+    safe_user, user_vault = _user_vault(request)
     entries = []
     if user_vault.exists():
         for md_path in sorted(user_vault.rglob("*.md")):
+            # Symlink guard: skip symlinks to avoid leaking outside vault
+            if md_path.is_symlink():
+                continue
             try:
                 rel = md_path.relative_to(user_vault)
             except ValueError:
@@ -215,13 +232,10 @@ def vault_download(request):
 
     from django.http import FileResponse, HttpResponse
 
-    from .vault import VAULT_ROOT, _safe
-
-    safe_user = _safe(request.user.username)
-    user_vault = VAULT_ROOT / safe_user
+    safe_user, user_vault = _user_vault(request)
     files: list = []
     if user_vault.exists():
-        files = list(user_vault.rglob("*.md"))
+        files = [p for p in user_vault.rglob("*.md") if not p.is_symlink()]
     # Guard: max 1000 files
     if len(files) > 1000:
         return HttpResponse("Vault terlalu besar: melebihi 1000 file.", status=400)

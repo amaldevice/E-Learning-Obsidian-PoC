@@ -268,6 +268,31 @@ class VaultHelperTests(TestCase):
             self.assertEqual(meta["title"], "T2")
             self.assertEqual(content.strip(), "updated")
 
+    def test_vault_rel_path_is_relative(self):
+        from .vault import vault_path, vault_rel_path
+
+        vpath = vault_path("alice", "python-dasar", "lesson-01")
+        rel = vault_rel_path(vpath)
+        self.assertTrue(rel.startswith("vaults/"))
+        self.assertFalse(rel.startswith("/"))
+        self.assertIn("alice", rel)
+    def test_tags_extracted_on_save(self):
+        # Tags #python etc should be extracted from content into frontmatter
+        from django.contrib.auth import get_user_model as _GU
+
+        User = _GU()
+        alice = User.objects.create_user(username="alice2", password="poc12345")
+        course = Course.objects.create(title="C", slug="c-tags")
+        lesson = Lesson.objects.create(course=course, title="L", slug="l1", order=1)
+        self.client.login(username="alice2", password="poc12345")
+        self.client.post(f"/courses/{course.slug}/lessons/{lesson.slug}/", {"content": "Hello #python and #django here"})
+        from .vault import read_note, vault_path
+
+        vpath = vault_path("alice2", course.slug, lesson.slug)
+        meta, _ = read_note(vpath)
+        self.assertIn("python", meta.get("tags", []))
+        self.assertIn("django", meta.get("tags", []))
+
 class BacklinksTests(TestCase):
     def setUp(self):
         import shutil
@@ -506,19 +531,22 @@ class VaultListDownloadTests(TestCase):
         self.assertEqual(zf.namelist(), [])
 
     def test_vault_download_guard_too_many_files(self):
-        from pathlib import Path
         from unittest.mock import MagicMock, patch
 
         self.client.login(username="alice", password="poc12345")
-        fake_files = [Path(f"/tmp/fake/{i}.md") for i in range(1001)]
-        with patch("courses.vault.VAULT_ROOT") as mock_root:
+        fake_files = []
+        for i in range(1001):
+            m = MagicMock()
+            m.is_symlink.return_value = False
+            m.relative_to.return_value = f"course/lesson-{i}.md"
+            fake_files.append(m)
+        with patch("courses.views._user_vault") as mock_user_vault:
             mock_vault = MagicMock()
             mock_vault.exists.return_value = True
             mock_vault.rglob.return_value = fake_files
-            mock_root.__truediv__.return_value = mock_vault
+            mock_user_vault.return_value = ("alice", mock_vault)
             resp = self.client.get("/vault/download/")
             self.assertEqual(resp.status_code, 400)
-
     def test_vault_download_guard_too_large(self):
         from unittest.mock import MagicMock, patch
 
@@ -527,18 +555,19 @@ class VaultListDownloadTests(TestCase):
         p1 = MagicMock()
         p1.stat.return_value.st_size = 30 * 1024 * 1024
         p1.relative_to.return_value = "python-dasar/lesson-01.md"
+        p1.is_symlink.return_value = False
         p2 = MagicMock()
         p2.stat.return_value.st_size = 30 * 1024 * 1024
         p2.relative_to.return_value = "python-dasar/lesson-02.md"
+        p2.is_symlink.return_value = False
         fake_files = [p1, p2]
-        with patch("courses.vault.VAULT_ROOT") as mock_root:
+        with patch("courses.views._user_vault") as mock_user_vault:
             mock_vault = MagicMock()
             mock_vault.exists.return_value = True
             mock_vault.rglob.return_value = fake_files
-            mock_root.__truediv__.return_value = mock_vault
+            mock_user_vault.return_value = ("alice", mock_vault)
             resp = self.client.get("/vault/download/")
             self.assertEqual(resp.status_code, 400)
-
     def test_vault_list_empty(self):
         self.client.login(username="alice", password="poc12345")
         resp = self.client.get("/vault/")

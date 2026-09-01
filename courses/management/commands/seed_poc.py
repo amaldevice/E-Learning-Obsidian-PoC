@@ -98,7 +98,20 @@ class Command(BaseCommand):
             Lesson.objects.all().delete()
             Course.objects.all().delete()
             User.objects.filter(username__in=[u[0] for u in USERS]).delete()
+            # Also clean vault files for seed users
+            import shutil
+            from pathlib import Path
 
+            from django.conf import settings
+
+            from courses.vault import _safe
+
+            vault_root = Path(settings.BASE_DIR) / "vaults"
+            for username, *_ in USERS:
+                user_vault = vault_root / _safe(username)
+                if user_vault.exists():
+                    shutil.rmtree(user_vault)
+                    self.stdout.write(f"  Cleaned vault: {user_vault}")
         # Users
         for username, email, is_staff in USERS:
             user, created = User.objects.get_or_create(
