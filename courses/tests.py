@@ -157,3 +157,113 @@ class CourseLessonTests(TestCase):
             )
         )
         self.assertEqual(slugs, ["lesson-01", "lesson-02", "lesson-03"])
+
+
+class NoteVaultTests(TestCase):
+    def setUp(self):
+        self.alice = User.objects.create_user(username="alice", password="poc12345")
+        self.budi = User.objects.create_user(username="budi", password="poc12345")
+        self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
+        self.lesson = Lesson.objects.create(
+            course=self.course, title="Intro", slug="lesson-01", order=1
+        )
+
+    def _lesson_url(self):
+        return f"/courses/{self.course.slug}/lessons/{self.lesson.slug}/"
+
+    def test_save_and_load_note(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.post(self._lesson_url(), {"content": "# Hello\nMy note"})
+        self.assertEqual(resp.status_code, 302)
+        # Reload should show saved content in textarea
+        resp = self.client.get(self._lesson_url())
+        self.assertContains(resp, "# Hello")
+        self.assertContains(resp, "My note")
+
+    def test_isolation_alice_budi(self):
+        self.client.login(username="alice", password="poc12345")
+        self.client.post(self._lesson_url(), {"content": "alice note"})
+        self.client.logout()
+        self.client.login(username="budi", password="poc12345")
+        resp = self.client.get(self._lesson_url())
+        self.assertNotContains(resp, "alice note")
+        # budi saves different note
+        self.client.post(self._lesson_url(), {"content": "budi note"})
+        resp = self.client.get(self._lesson_url())
+        self.assertContains(resp, "budi note")
+        # alice still sees her note
+        self.client.logout()
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get(self._lesson_url())
+        self.assertContains(resp, "alice note")
+        self.assertNotContains(resp, "budi note")
+
+    def test_anon_cannot_save(self):
+        resp = self.client.post(self._lesson_url(), {"content": "evil"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/accounts/login/", resp["Location"])
+
+    def test_note_model_unique_together(self):
+        from django.db import IntegrityError
+
+        from .models import Note
+
+        Note.objects.create(
+            user=self.alice, lesson=self.lesson, vault_path="vaults/alice/x.md"
+        )
+        with self.assertRaises(IntegrityError):
+            Note.objects.create(
+                user=self.alice, lesson=self.lesson, vault_path="vaults/alice/y.md"
+            )
+
+    def test_frontmatter_roundtrip(self):
+        self.client.login(username="alice", password="poc12345")
+        self.client.post(self._lesson_url(), {"content": "frontmatter test"})
+        from .vault import read_note, vault_path
+
+        vpath = vault_path("alice", self.course.slug, self.lesson.slug)
+        meta, content = read_note(vpath)
+        self.assertEqual(meta["course"], "python-dasar")
+        self.assertEqual(meta["lesson"], "lesson-01")
+        self.assertEqual(content.strip(), "frontmatter test")
+        self.assertIn("tags", meta)
+
+
+class VaultHelperTests(TestCase):
+    def test_vault_path_sanitasi(self):
+        from .vault import vault_path
+
+        p = vault_path("Alice", "Python Dasar", "Lesson 01: Intro!")
+        self.assertIn("alice", str(p))
+        self.assertIn("python-dasar", str(p))
+        self.assertIn("lesson-01-intro", str(p))
+
+    def test_vault_path_traversal_guard(self):
+        from .vault import vault_path
+
+        # Username with traversal attempt should be sanitized, not escape
+        p = vault_path("../../etc", "course", "lesson")
+        # Should not escape vault root
+        from django.conf import settings
+        from pathlib import Path
+
+        vault_root = Path(settings.BASE_DIR) / "vaults"
+        self.assertTrue(str(p.resolve()).startswith(str(vault_root.resolve())))
+
+    def test_write_read_atomic(self):
+        import tempfile
+        from pathlib import Path
+
+        from .vault import read_note, write_note_atomic
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "test.md"
+            write_note_atomic(p, {"title": "T", "tags": ["a"]}, "hello world")
+            meta, content = read_note(p)
+            self.assertEqual(meta["title"], "T")
+            self.assertEqual(content.strip(), "hello world")
+            # Overwrite
+            write_note_atomic(p, {"title": "T2", "tags": []}, "updated")
+            meta, content = read_note(p)
+            self.assertEqual(meta["title"], "T2")
+            self.assertEqual(content.strip(), "updated")

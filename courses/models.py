@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -30,3 +31,21 @@ class Lesson(models.Model):
 
     def __str__(self) -> str:
         return f"{self.course.slug}/{self.slug}"
+
+
+class Note(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notes"
+    )
+    lesson = models.ForeignKey(
+        Lesson, on_delete=models.CASCADE, related_name="notes"
+    )
+    vault_path = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("user", "lesson")]
+
+    def __str__(self) -> str:
+        return f"{self.user} / {self.lesson}"
