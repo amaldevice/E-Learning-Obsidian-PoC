@@ -1,8 +1,10 @@
+import json
 import re
 from datetime import datetime, timezone
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
 from .markdown import render_markdown
@@ -39,19 +41,30 @@ def course_detail(request, slug):
         request, "courses/course_detail.html", {"course": course, "lessons": lessons}
     )
 
-
 @login_required
 def lesson_detail(request, course_slug, lesson_slug):
     course = get_object_or_404(Course, slug=course_slug)
     lesson = get_object_or_404(Lesson, course=course, slug=lesson_slug)
 
-    # Handle POST save
+    is_fetch = request.headers.get("X-Requested-With") == "fetch" or "application/json" in request.headers.get("Accept", "")
+
+    # Handle POST save (supports both form POST and fetch JSON/form)
     if request.method == "POST":
-        content = request.POST.get("content", "")
+        # Support JSON body for fetch autosave
+        if request.content_type == "application/json":
+            try:
+                data = json.loads(request.body.decode("utf-8") or "{}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                data = {}
+            content = data.get("content", "")
+        else:
+            content = request.POST.get("content", "")
         # Derive vault path from authenticated user + course/lesson slugs (IDOR guard: never trust client path)
         try:
             vpath = vault_path(request.user.username, course.slug, lesson.slug)
         except ValueError:
+            if is_fetch or request.content_type == "application/json":
+                return JsonResponse({"ok": False, "error": "Invalid path."}, status=400)
             messages.error(request, "Invalid path.")
             return redirect("lesson-detail", course_slug=course.slug, lesson_slug=lesson.slug)
 
@@ -74,6 +87,8 @@ def lesson_detail(request, course_slug, lesson_slug):
             lesson=lesson,
             defaults={"vault_path": str(vpath)},
         )
+        if is_fetch or request.content_type == "application/json":
+            return JsonResponse({"ok": True, "updated": now})
         messages.success(request, "Catatan tersimpan.")
         return redirect(
             "lesson-detail", course_slug=course.slug, lesson_slug=lesson.slug
@@ -114,3 +129,22 @@ def lesson_detail(request, course_slug, lesson_slug):
             "note_updated": note_updated,
         },
     )
+
+@login_required
+def lesson_preview(request, course_slug, lesson_slug):
+    """POST JSON {content: str} -> {html: str} sanitized via markdown.py (nh3)."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    # Ensure lesson exists (authz) even though content is freeform preview
+    get_object_or_404(Course, slug=course_slug)
+    get_object_or_404(Lesson, course__slug=course_slug, slug=lesson_slug)
+    try:
+        data = json.loads(request.body.decode("utf-8") or "{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        data = {}
+    content = data.get("content", "")
+    # Also support form-encoded fallback
+    if not content and request.POST.get("content"):
+        content = request.POST.get("content", "")
+    html = render_markdown(content)
+    return JsonResponse({"html": html})
