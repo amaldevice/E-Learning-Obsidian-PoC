@@ -50,6 +50,18 @@ class CourseLessonTests(TestCase):
         )
         self.assertEqual(resp.status_code, 302)
 
+    def test_logout(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get("/courses/")
+        self.assertEqual(resp.status_code, 200)
+        # Logout via POST (Django 5+ requires POST)
+        resp = self.client.post("/accounts/logout/")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/accounts/login/", resp["Location"])
+        # After logout, anon should be redirected
+        resp = self.client.get("/courses/")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/accounts/login/", resp["Location"])
     # --- course list ---
 
     def test_course_list_shows_courses(self):
@@ -568,6 +580,7 @@ class VaultListDownloadTests(TestCase):
             mock_user_vault.return_value = ("alice", mock_vault)
             resp = self.client.get("/vault/download/")
             self.assertEqual(resp.status_code, 400)
+
     def test_vault_list_empty(self):
         self.client.login(username="alice", password="poc12345")
         resp = self.client.get("/vault/")
@@ -579,3 +592,127 @@ class VaultListDownloadTests(TestCase):
         resp = self.client.get("/courses/")
         self.assertContains(resp, 'href="/vault/"')
         self.assertContains(resp, 'href="/vault/download/"')
+
+class SeedPocTests(TestCase):
+    def test_seed_idempotent(self):
+        from django.core.management import call_command
+
+        call_command("seed_poc", verbosity=0)
+        from django.contrib.auth import get_user_model as GU
+        from courses.models import Course
+
+        User = GU()
+        count_users_1 = User.objects.filter(username__in=["alice", "budi", "citra", "dewi", "admin"]).count()
+        count_courses_1 = Course.objects.count()
+        call_command("seed_poc", verbosity=0)
+        count_users_2 = User.objects.filter(username__in=["alice", "budi", "citra", "dewi", "admin"]).count()
+        count_courses_2 = Course.objects.count()
+        self.assertEqual(count_users_1, 5)
+        self.assertEqual(count_users_2, 5)
+        self.assertEqual(count_courses_1, count_courses_2)
+
+    def test_seed_reset_cleans_vault(self):
+        from django.core.management import call_command
+        from pathlib import Path
+        from django.conf import settings
+        from courses.vault import _safe, vault_path, write_note_atomic
+
+        call_command("seed_poc", verbosity=0)
+        # Create a vault file
+        vpath = vault_path("alice", "python-dasar", "lesson-01")
+        write_note_atomic(vpath, {"title": "T", "tags": []}, "before reset")
+        self.assertTrue(vpath.exists())
+        call_command("seed_poc", "--reset", verbosity=0)
+        # Vault should be cleaned
+        self.assertFalse(vpath.exists())
+        # Users and courses still exist after reset
+        from django.contrib.auth import get_user_model as GU
+
+        User = GU()
+        self.assertTrue(User.objects.filter(username="alice").exists())
+
+    def test_seed_creates_expected_courses_lessons(self):
+        from django.core.management import call_command
+
+        call_command("seed_poc", verbosity=0)
+        from courses.models import Course
+
+        self.assertTrue(Course.objects.filter(slug="python-dasar").exists())
+        self.assertTrue(Course.objects.filter(slug="web-dasar").exists())
+        py = Course.objects.get(slug="python-dasar")
+        self.assertEqual(py.lessons.count(), 4)
+        web = Course.objects.get(slug="web-dasar")
+        self.assertEqual(web.lessons.count(), 3)
+
+
+class HardeningTests(TestCase):
+    def setUp(self):
+        self.alice = User.objects.create_user(username="alice", password="poc12345")
+        self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
+        self.lesson = Lesson.objects.create(course=self.course, title="Intro", slug="lesson-01", order=1)
+
+    def test_toast_timestamp_after_save(self):
+        self.client.login(username="alice", password="poc12345")
+        url = f"/courses/{self.course.slug}/lessons/{self.lesson.slug}/"
+        resp = self.client.post(url, {"content": "hello"}, follow=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Catatan tersimpan")
+        resp = self.client.get(url)
+        self.assertContains(resp, "Terakhir:")
+    def test_traversal_via_slug_sanitized(self):
+        # Even if someone crafts a request with traversal-like slug, vault_path sanitizes
+        from courses.vault import vault_path
+
+        p = vault_path("alice", "../../etc", "../../../passwd")
+        from django.conf import settings
+        from pathlib import Path
+
+        vault_root = Path(settings.BASE_DIR) / "vaults"
+        self.assertTrue(str(p.resolve()).startswith(str(vault_root.resolve())))
+        self.assertNotIn("..", str(p))
+    def test_symlink_skipped_in_vault_list(self):
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        self.client.login(username="alice", password="poc12345")
+        # Create real temp files to avoid MagicMock sorting issues
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault = Path(tmpdir) / "vault"
+            vault.mkdir()
+            (vault / "python-dasar").mkdir()
+            (vault / "python-dasar" / "normal.md").write_text("---\ntitle: Normal\n---\nhello")
+            # Symlink that should be skipped
+            evil_target = vault / "python-dasar" / "evil.md"
+            evil_target.symlink_to(vault / "python-dasar" / "normal.md")
+            with patch("courses.views._user_vault", return_value=("alice", vault)):
+                resp = self.client.get("/vault/")
+                html = resp.content.decode()
+                # normal should appear, evil symlink should be skipped
+                self.assertIn("normal", html.lower())
+                self.assertNotIn("evil", html)
+        import threading
+        from pathlib import Path
+
+        from courses.vault import read_note, write_note_atomic
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "concurrent.md"
+            errors = []
+
+            def writer(n):
+                try:
+                    write_note_atomic(p, {"title": f"T{n}", "tags": []}, f"content {n}")
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=writer, args=(i,)) for i in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [])
+            self.assertTrue(p.exists())
+            meta, content = read_note(p)
+            self.assertIn("content", content)
