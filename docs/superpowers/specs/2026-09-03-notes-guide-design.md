@@ -22,10 +22,12 @@ Single change in `templates/courses/lesson_detail.html`, editor section, above `
 - Content (static HTML, Indonesian, matching UI language):
   1. `[[lesson-slug]]` — link to a lesson in the same course.
   2. `[[course-slug/lesson-slug|Teks bacaan]]` — link across courses with alias.
-  3. `[[lesson-slug#judul-bagian]]` — link to a section (heading anchor).
+  3. `[[lesson-slug#judul-bagian]]` — heading suffix accepted; still counts as a backlink
+     to the lesson (no section jump; forward `[[...]]` links render as literal text).
   4. `#tag` / `#topik/subtopik` — tags; extracted on save into frontmatter.
-  5. Two copy-paste examples using real slugs from the current page context
-     (e.g. `[[{{ course.slug }}/{{ lesson.slug }}|catatanku]]` pattern + one cross-course example).
+  5. Two copy-paste examples: one with the current page's real slugs
+     (`[[{{ course.slug }}/{{ lesson.slug }}|...]]` pattern rendered per page),
+     one cross-course pattern with placeholder slugs (`[[nama-course/lesson-02|...]]`).
   6. Three practice bullets: one idea per note; link when a concept recurs in another
      course; tag sparingly (2–4 topic tags). Pointer: "link something, then check the
      Backlinks panel below — your link appears on the target lesson."
