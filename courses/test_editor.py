@@ -70,6 +70,12 @@ class EditorLessonTests(TestCase):
         self.assertIn('id="notes-guide"', html)
         self.assertIn("[[", html)
         self.assertIn("#tag", html)
+    def test_lesson_page_shows_notes_toggle(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get(self._url())
+        html = resp.content.decode()
+        self.assertIn('id="btn-notes-toggle"', html)
+        self.assertIn("notes-hidden", html)
 
     # --- save via fetch JSON + form POST still works ---
 
