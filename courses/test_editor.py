@@ -4,12 +4,14 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from .models import Course, Lesson
+from .tests import TempVaultMixin
 
 User = get_user_model()
 
 
-class EditorLessonTests(TestCase):
+class EditorLessonTests(TempVaultMixin, TestCase):
     def setUp(self):
+        super().setUp()
         self.user = User.objects.create_user(username="alice", password="poc12345")
         self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
         self.lesson = Course.objects.get(slug="python-dasar").lessons.create(

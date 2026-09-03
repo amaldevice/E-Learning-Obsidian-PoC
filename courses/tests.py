@@ -1,13 +1,33 @@
+import tempfile
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from .models import Course, Lesson
 
 User = get_user_model()
 
 
-class CourseLessonTests(TestCase):
+class TempVaultMixin:
+    """Isolate filesystem vault per test: override settings.VAULT_ROOT with a temp dir.
+
+    Prevents tests from touching the dev vault at <BASE_DIR>/vaults.
+    vault/backlinks/views read the root live via courses.vault.get_vault_root().
+    """
+
+    def _enter_vault_override(self):
+        self._vault_tmp = tempfile.TemporaryDirectory(prefix="test-vaults-")
+        self._vault_override = override_settings(VAULT_ROOT=self._vault_tmp.name)
+        self._vault_override.enable()
+        self.addCleanup(self._vault_override.disable)
+        self.addCleanup(self._vault_tmp.cleanup)
+
     def setUp(self):
+        super().setUp()
+        self._enter_vault_override()
+class CourseLessonTests(TempVaultMixin, TestCase):
+    def setUp(self):
+        super().setUp()
         self.user = User.objects.create_user(username="alice", password="poc12345")
         self.course = Course.objects.create(
             title="Python Dasar", slug="python-dasar", description="Belajar Python"
@@ -171,8 +191,9 @@ class CourseLessonTests(TestCase):
         self.assertEqual(slugs, ["lesson-01", "lesson-02", "lesson-03"])
 
 
-class NoteVaultTests(TestCase):
+class NoteVaultTests(TempVaultMixin, TestCase):
     def setUp(self):
+        super().setUp()
         self.alice = User.objects.create_user(username="alice", password="poc12345")
         self.budi = User.objects.create_user(username="budi", password="poc12345")
         self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
@@ -241,7 +262,7 @@ class NoteVaultTests(TestCase):
         self.assertIn("tags", meta)
 
 
-class VaultHelperTests(TestCase):
+class VaultHelperTests(TempVaultMixin, TestCase):
     def test_vault_path_sanitasi(self):
         from .vault import vault_path
 
@@ -259,7 +280,7 @@ class VaultHelperTests(TestCase):
         from django.conf import settings
         from pathlib import Path
 
-        vault_root = Path(settings.BASE_DIR) / "vaults"
+        vault_root = Path(settings.VAULT_ROOT)
         self.assertTrue(str(p.resolve()).startswith(str(vault_root.resolve())))
 
     def test_write_read_atomic(self):
@@ -285,9 +306,9 @@ class VaultHelperTests(TestCase):
 
         vpath = vault_path("alice", "python-dasar", "lesson-01")
         rel = vault_rel_path(vpath)
-        self.assertTrue(rel.startswith("vaults/"))
         self.assertFalse(rel.startswith("/"))
         self.assertIn("alice", rel)
+        self.assertTrue(rel.endswith("python-dasar/lesson-01.md"))
     def test_tags_extracted_on_save(self):
         # Tags #python etc should be extracted from content into frontmatter
         from django.contrib.auth import get_user_model as _GU
@@ -305,36 +326,15 @@ class VaultHelperTests(TestCase):
         self.assertIn("python", meta.get("tags", []))
         self.assertIn("django", meta.get("tags", []))
 
-class BacklinksTests(TestCase):
+class BacklinksTests(TempVaultMixin, TestCase):
     def setUp(self):
-        import shutil
-        from pathlib import Path
-
-        from django.conf import settings
-
-        from .vault import VAULT_ROOT, _safe
-
-        # clean vault for alice/budi to avoid cross-test pollution (filesystem persists across tests)
-        for u in ["alice", "budi"]:
-            p = VAULT_ROOT / _safe(u)
-            if p.exists():
-                shutil.rmtree(p)
+        super().setUp()
         self.alice = User.objects.create_user(username="alice", password="poc12345")
         self.budi = User.objects.create_user(username="budi", password="poc12345")
         self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
         self.lesson1 = Lesson.objects.create(course=self.course, title="Intro", slug="lesson-01", order=1)
         self.lesson2 = Lesson.objects.create(course=self.course, title="Variabel", slug="lesson-02", order=2)
         self.lesson3 = Lesson.objects.create(course=self.course, title="Fungsi", slug="lesson-03", order=3)
-
-    def tearDown(self):
-        import shutil
-
-        from .vault import VAULT_ROOT, _safe
-
-        for u in ["alice", "budi"]:
-            p = VAULT_ROOT / _safe(u)
-            if p.exists():
-                shutil.rmtree(p)
 
     def _lesson_url(self, lesson):
         return f"/courses/{self.course.slug}/lessons/{lesson.slug}/"
@@ -411,8 +411,9 @@ class BacklinksTests(TestCase):
         self.assertEqual(bl[0]["lesson_slug"], "lesson-02")
 
 
-class VaultListDownloadTests(TestCase):
+class VaultListDownloadTests(TempVaultMixin, TestCase):
     def setUp(self):
+        super().setUp()
         self.alice = User.objects.create_user(username="alice", password="poc12345")
         self.budi = User.objects.create_user(username="budi", password="poc12345")
         self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
@@ -420,21 +421,6 @@ class VaultListDownloadTests(TestCase):
         self.lesson1 = Lesson.objects.create(course=self.course, title="Intro", slug="lesson-01", order=1)
         self.lesson2 = Lesson.objects.create(course=self.course, title="Variabel", slug="lesson-02", order=2)
         self.lesson_w1 = Lesson.objects.create(course=self.course2, title="HTML", slug="lesson-01-html", order=1)
-        self._clean_vaults()
-
-    def tearDown(self):
-        self._clean_vaults()
-
-    def _clean_vaults(self):
-        import shutil
-        from pathlib import Path
-
-        from django.conf import settings
-
-        for user in ["alice", "budi"]:
-            p = Path(settings.BASE_DIR) / "vaults" / user
-            if p.exists():
-                shutil.rmtree(p)
 
     def _save_note(self, username, course_slug, lesson_slug, title, content):
         from datetime import datetime, timezone
@@ -593,7 +579,7 @@ class VaultListDownloadTests(TestCase):
         self.assertContains(resp, 'href="/vault/"')
         self.assertContains(resp, 'href="/vault/download/"')
 
-class SeedPocTests(TestCase):
+class SeedPocTests(TempVaultMixin, TestCase):
     def test_seed_idempotent(self):
         from django.core.management import call_command
 
@@ -645,8 +631,9 @@ class SeedPocTests(TestCase):
         self.assertEqual(web.lessons.count(), 3)
 
 
-class HardeningTests(TestCase):
+class HardeningTests(TempVaultMixin, TestCase):
     def setUp(self):
+        super().setUp()
         self.alice = User.objects.create_user(username="alice", password="poc12345")
         self.course = Course.objects.create(title="Python Dasar", slug="python-dasar")
         self.lesson = Lesson.objects.create(course=self.course, title="Intro", slug="lesson-01", order=1)
@@ -667,7 +654,7 @@ class HardeningTests(TestCase):
         from django.conf import settings
         from pathlib import Path
 
-        vault_root = Path(settings.BASE_DIR) / "vaults"
+        vault_root = Path(settings.VAULT_ROOT)
         self.assertTrue(str(p.resolve()).startswith(str(vault_root.resolve())))
         self.assertNotIn("..", str(p))
     def test_symlink_skipped_in_vault_list(self):

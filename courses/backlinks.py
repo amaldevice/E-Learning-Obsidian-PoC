@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from .vault import VAULT_ROOT, _safe
+from .vault import _safe, get_vault_root
 
 WIKILINK_RE = re.compile(r"(!?)\[\[([^|\]#]+)(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]")
 # Also used by courses/views.py for tag extraction on save
@@ -36,7 +36,7 @@ def get_backlinks(username: str, target_lesson_slug: str, course_slug: str) -> l
     Returns: list of dicts with keys course_slug, lesson_slug, path
     """
     safe_user = _safe(username)
-    user_vault = VAULT_ROOT / safe_user
+    user_vault = get_vault_root() / safe_user
     if not user_vault.exists():
         return []
 

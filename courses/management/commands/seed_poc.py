@@ -100,13 +100,10 @@ class Command(BaseCommand):
             User.objects.filter(username__in=[u[0] for u in USERS]).delete()
             # Also clean vault files for seed users
             import shutil
-            from pathlib import Path
 
-            from django.conf import settings
+            from courses.vault import _safe, get_vault_root
 
-            from courses.vault import _safe
-
-            vault_root = Path(settings.BASE_DIR) / "vaults"
+            vault_root = get_vault_root()
             for username, *_ in USERS:
                 user_vault = vault_root / _safe(username)
                 if user_vault.exists():

@@ -8,15 +8,25 @@ from django.conf import settings
 from filelock import FileLock
 
 SAFE_SLUG = re.compile(r"[^a-z0-9_-]+")
-VAULT_ROOT = Path(settings.BASE_DIR) / "vaults"
 
+
+def get_vault_root() -> Path:
+    """Vault base dir, read live from settings so tests can override per-test."""
+    return Path(settings.VAULT_ROOT)
+
+
+VAULT_ROOT = Path(settings.BASE_DIR) / "vaults"
 
 def _safe(s: str) -> str:
     return SAFE_SLUG.sub("-", s.lower()).strip("-") or "untitled"
 
 
 def vault_rel_path(vpath: Path) -> str:
-    """Return vault path relatif to BASE_DIR for DB storage (portable)."""
+    """Return vault path relatif to vault root (fallback BASE_DIR) for DB storage (portable)."""
+    try:
+        return str(vpath.resolve().relative_to(get_vault_root().resolve()))
+    except ValueError:
+        pass
     try:
         return str(vpath.resolve().relative_to(Path(settings.BASE_DIR).resolve()))
     except ValueError:
@@ -28,14 +38,14 @@ def _safe(s: str) -> str:
 
 
 def vault_path(username: str, course_slug: str, lesson_slug: str) -> Path:
-    p = VAULT_ROOT / _safe(username) / _safe(course_slug) / f"{_safe(lesson_slug)}.md"
-    # Guard traversal: resolved path must be inside VAULT_ROOT
+    root = get_vault_root()
+    p = root / _safe(username) / _safe(course_slug) / f"{_safe(lesson_slug)}.md"
+    # Guard traversal: resolved path must be inside vault root
     try:
-        p.resolve().relative_to(VAULT_ROOT.resolve())
+        p.resolve().relative_to(root.resolve())
     except ValueError:
         raise ValueError("Invalid vault path: traversal detected")
     return p
-
 
 def read_note(path: Path) -> tuple[dict, str]:
     if not path.exists():

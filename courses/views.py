@@ -169,10 +169,10 @@ def lesson_preview(request, course_slug, lesson_slug):
 
 # --- Vault views (T5) ---
 def _user_vault(request) -> tuple[str, "Path"]:
-    from .vault import VAULT_ROOT, _safe
+    from .vault import _safe, get_vault_root
 
     safe_user = _safe(request.user.username)
-    return safe_user, VAULT_ROOT / safe_user
+    return safe_user, get_vault_root() / safe_user
 
 
 @login_required
