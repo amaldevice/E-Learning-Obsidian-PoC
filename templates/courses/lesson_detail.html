@@ -54,6 +54,29 @@
       <button class="active" id="tab-edit" type="button">Edit</button>
       <button id="tab-preview" type="button">Preview</button>
     </div>
+    <details id="notes-guide" style="margin:0 12px 8px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;padding:8px 12px;font-size:13px">
+      <summary style="cursor:pointer;font-weight:600">Panduan mencatat &amp; menghubungkan</summary>
+      <div style="margin-top:8px;line-height:1.6">
+        <p style="margin:0 0 6px"><strong>Sintaks:</strong></p>
+        <ul style="margin:0 0 8px;padding-left:18px">
+          <li><code>[[lesson-slug]]</code> — tautan ke lesson di course yang sama.</li>
+          <li><code>[[course-slug/lesson-slug|Teks bacaan]]</code> — tautan antar course dengan alias.</li>
+          <li><code>[[lesson-slug#judul-bagian]]</code> — akhiran heading diterima; tercatat sebagai backlink ke lesson tersebut (tanpa lompat bagian, dan tautan <code>[[...]]</code> tampil apa adanya di preview).</li>
+          <li><code>#tag</code> / <code>#topik/subtopik</code> — tag; tersimpan ke frontmatter saat Save.</li>
+        </ul>
+        <p style="margin:0 0 6px"><strong>Contoh (salin-tempel):</strong></p>
+        <ul style="margin:0 0 8px;padding-left:18px">
+          <li><code>[[{{ course.slug }}/{{ lesson.slug }}|catatanku]]</code></li>
+          <li><code>[[nama-course/lesson-02|konsep terkait]]</code></li>
+        </ul>
+        <p style="margin:0 0 6px"><strong>Kebiasaan:</strong></p>
+        <ul style="margin:0;padding-left:18px">
+          <li>Satu catatan, satu ide per lesson.</li>
+          <li>Saat konsep muncul lagi di course lain, tautkan dengan <code>[[course/lesson|alias]]</code>.</li>
+          <li>Beri 2–4 tag topik saja. Setelah menyimpan, cek panel Backlinks di bawah — tautanmu muncul di lesson tujuan.</li>
+        </ul>
+      </div>
+    </details>
 
     <div id="pane-edit" class="pane active">
       <!-- Hidden textarea holds initial content for JS + fallback -->

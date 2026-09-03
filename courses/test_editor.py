@@ -63,6 +63,13 @@ class EditorLessonTests(TestCase):
         self.client.login(username="alice", password="poc12345")
         resp = self.client.get(self._url())
         self.assertIn("<noscript>", resp.content.decode())
+    def test_lesson_page_shows_notes_guide(self):
+        self.client.login(username="alice", password="poc12345")
+        resp = self.client.get(self._url())
+        html = resp.content.decode()
+        self.assertIn('id="notes-guide"', html)
+        self.assertIn("[[", html)
+        self.assertIn("#tag", html)
 
     # --- save via fetch JSON + form POST still works ---
 
