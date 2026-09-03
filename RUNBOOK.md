@@ -48,6 +48,17 @@ uv run python manage.py seed_poc --reset
 
 `--reset` menghapus Course/Lesson/User seed + `vaults/<user>/` di disk, lalu membuat ulang.
 
+## 3b. Seed Demo Notes (opsional)
+
+```bash
+uv run python manage.py seed_demo_notes
+```
+
+Mengisi 1 catatan per (siswa, lesson) — 4 siswa × 7 lesson = 28 notes — dengan
+`[[wikilink]]` antar lesson dan antar course plus `#tag`, untuk mendemokan
+Backlinks, panduan mencatat, dan toggle sidebar. Idempoten (aman diulang;
+`created` dipertahankan). `--reset` menghapus vault seed users dulu.
+
 ## 4. Jalankan Server
 
 ```bash
